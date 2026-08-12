@@ -410,7 +410,6 @@ class TodoApp:
                                 color=APP_TEXT,
                                 font_family=font(bold=True),
                             ),
-                            ft.Text("Маленькі кроки. Великі перемоги.", size=18, color=APP_MUTED, font_family=font()),
                         ],
                         spacing=2,
                     ),
