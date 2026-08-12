@@ -1,25 +1,37 @@
 import os
+import re
 from datetime import date, datetime, time
 
 import flet as ft
 
-from model import Task
+from model import Task, PRIORITY_ORDER
 from reminders import ReminderLoop
-from storage import load_tasks, save_tasks
+from storage import load_tasks, save_tasks, load_settings, save_settings
 
+# --- Theme & Base Colors ---
 APP_BG = "#2C2C2C"
 APP_PANEL = "#612D53"
-APP_ACCENT = "#853953"
-APP_ACCENT_SOFT = "#A86576"
 APP_TEXT = "#F3F4F4"
 APP_MUTED = "#D7D4D2"
 APP_CARD = "#3B2F35"
 APP_CARD_DONE = "#2F2F2F"
 APP_OVERDUE = "#B23A48"
 
+DEFAULT_ACCENT = "#853953"
+
+# Priority Color Mapping
+PRIORITY_COLORS = {
+    "none": "#8E8E93",
+    "low": "#34C759",     # Green
+    "medium": "#FF9500",  # Orange
+    "high": "#FF3B30",    # Red
+}
+
 TASKS_FILE = "tasks.json"
+SETTINGS_FILE = "settings.json"
 
 tasks: list[Task] = load_tasks(TASKS_FILE)
+app_settings: dict = load_settings(SETTINGS_FILE)
 
 
 def task_border() -> ft.Border:
@@ -32,7 +44,6 @@ def register_fonts(page: ft.Page) -> None:
     regular = os.path.join(base, "Cream Cake.otf")
     bold = os.path.join(base, "Cream Cake Bold.otf")
     fonts = {}
-    # missing font files used to render a blank grey page in v1 — guard against that here
     if os.path.exists(regular):
         fonts["Cream Cake"] = regular
     if os.path.exists(bold):
@@ -46,6 +57,10 @@ def font(bold: bool = False) -> str | None:
 
 def persist_tasks() -> None:
     save_tasks(tasks, filename=TASKS_FILE)
+
+
+def persist_settings() -> None:
+    save_settings(app_settings, filename=SETTINGS_FILE)
 
 
 def as_date(value: datetime | date) -> date:
@@ -62,12 +77,24 @@ def format_due(due: datetime) -> str:
     return due.strftime("%d.%m.%Y, %H:%M")
 
 
+def is_valid_hex(hex_code: str) -> bool:
+    return bool(re.match(r"^#(?:[0-9a-fA-F]{3}){1,2}$", hex_code))
+
+
 class TodoApp:
     def __init__(self, page: ft.Page):
         self.page = page
         self.search_query = ""
+        self.pending_priority = "none"
 
-        self.task_list = ft.Column(spacing=12, expand=True)
+        # Accent color loaded from settings or fallback default
+        self.accent_color = app_settings.get("accent_color", DEFAULT_ACCENT)
+
+        self.task_list = ft.Column(
+            spacing=12,
+            expand=True,
+            animate_opacity=300,
+        )
         self.search_field = ft.TextField(
             hint_text="Пошук завдань...",
             border_radius=14,
@@ -102,16 +129,21 @@ class TodoApp:
         self.date_picker = ft.DatePicker(on_change=self.on_date_picked)
         self.time_picker = ft.TimePicker(on_change=self.on_time_picked)
 
-        self.reminders_enabled = True
-        self.reminder_interval = 20.0
-        self.reminder_loop = ReminderLoop(tasks, on_fire=self.on_reminder_fired, interval=self.reminder_interval)
+        self.reminders_enabled = app_settings.get("reminders_enabled", True)
+        self.reminder_interval = app_settings.get("reminder_interval", 20.0)
 
-    # -- reminder callback (may run on a background thread) --
+        self.reminder_loop = ReminderLoop(
+            tasks,
+            on_fire=self.on_reminder_fired,
+            interval=self.reminder_interval,
+        )
+
+    # -- reminder callback --
     def on_reminder_fired(self, task: Task) -> None:
         persist_tasks()
         self.render()
         self.page.show_dialog(
-            ft.SnackBar(ft.Text(f"Нагадування: {task.desc}", font_family=font()), bgcolor=APP_ACCENT)
+            ft.SnackBar(ft.Text(f"Нагадування: {task.desc}", font_family=font()), bgcolor=self.accent_color)
         )
 
     # -- due date/time picking --
@@ -148,16 +180,23 @@ class TodoApp:
             return
 
         self.new_task_field.error = None
-        tasks.append(Task(desc=text, due=self.pending_due, status=False))
+        tasks.append(Task(desc=text, due=self.pending_due, status=False, priority=self.pending_priority))
         self.new_task_field.value = ""
         self.pending_due = None
+        self.pending_priority = "none"
         self.due_label.value = "Без нагадування"
         self.due_label.color = APP_MUTED
+        self.priority_dropdown.value = "none"
         persist_tasks()
         self.render()
 
     def toggle_task(self, task: Task) -> None:
         task.toggle_completed()
+        persist_tasks()
+        self.render()
+
+    def cycle_task_priority(self, task: Task) -> None:
+        task.cycle_priority()
         persist_tasks()
         self.render()
 
@@ -170,15 +209,29 @@ class TodoApp:
         self.search_query = (self.search_field.value or "").strip().lower()
         self.render()
 
-    # -- settings --
+    def on_priority_select(self, e: ft.ControlEvent) -> None:
+        self.pending_priority = e.control.value
+
+    # -- settings & custom accent color --
     def open_settings(self, e: ft.ControlEvent) -> None:
         completed_count = sum(1 for t in tasks if t.status)
+
+        accent_input = ft.TextField(
+            label="Власний колір (HEX)",
+            value=self.accent_color,
+            hint_text="#853953",
+            border_color="#5b3f4b",
+            color=APP_TEXT,
+            bgcolor="#2F2F2F",
+            text_size=14,
+            on_change=self.on_accent_change,
+        )
 
         reminders_switch = ft.Switch(
             label="Нагадування увімкнено",
             label_text_style=ft.TextStyle(color=APP_TEXT, font_family=font()),
             value=self.reminders_enabled,
-            active_color=APP_ACCENT,
+            active_color=self.accent_color,
             on_change=self.on_toggle_reminders,
         )
 
@@ -200,7 +253,7 @@ class TodoApp:
         clear_button = ft.TextButton(
             content=ft.Text(
                 f"Очистити виконані ({completed_count})",
-                color=APP_ACCENT_SOFT,
+                color=self.accent_color,
                 font_family=font(),
             ),
             on_click=self.on_clear_completed,
@@ -210,7 +263,14 @@ class TodoApp:
             bgcolor=APP_PANEL,
             title=ft.Text("Налаштування", color=APP_TEXT, font_family=font(bold=True), size=22),
             content=ft.Column(
-                [reminders_switch, interval_dropdown, ft.Divider(color="#5b3f4b"), clear_button],
+                [
+                    accent_input,
+                    ft.Divider(color="#5b3f4b"),
+                    reminders_switch,
+                    interval_dropdown,
+                    ft.Divider(color="#5b3f4b"),
+                    clear_button,
+                ],
                 tight=True,
                 spacing=16,
             ),
@@ -223,11 +283,24 @@ class TodoApp:
         )
         self.page.show_dialog(dialog)
 
+    def on_accent_change(self, e: ft.ControlEvent) -> None:
+        color_val = e.control.value.strip()
+        if is_valid_hex(color_val):
+            self.accent_color = color_val
+            app_settings["accent_color"] = color_val
+            persist_settings()
+            self.add_button.bgcolor = self.accent_color
+            self.page.update()
+
     def close_settings(self, e: ft.ControlEvent) -> None:
         self.page.pop_dialog()
+        self.render()
 
     def on_toggle_reminders(self, e: ft.ControlEvent) -> None:
         self.reminders_enabled = e.control.value
+        app_settings["reminders_enabled"] = self.reminders_enabled
+        persist_settings()
+
         if self.reminders_enabled:
             self.reminder_loop.start()
         else:
@@ -235,6 +308,9 @@ class TodoApp:
 
     def on_change_interval(self, e: ft.ControlEvent) -> None:
         self.reminder_interval = float(e.control.value)
+        app_settings["reminder_interval"] = self.reminder_interval
+        persist_settings()
+
         self.reminder_loop.stop()
         self.reminder_loop.interval = self.reminder_interval
         if self.reminders_enabled:
@@ -285,13 +361,31 @@ class TodoApp:
             content=ft.Text(
                 "○" if not is_done else "✓",
                 size=24,
-                color=APP_TEXT if not is_done else APP_ACCENT_SOFT,
+                color=APP_TEXT if not is_done else self.accent_color,
                 font_family=font(bold=True),
             ),
             on_click=lambda e, t=task: self.toggle_task(t),
             padding=0,
             alignment=ft.Alignment(0, 0),
             bgcolor="transparent",
+        )
+
+        priority_color = PRIORITY_COLORS.get(task.priority, APP_MUTED)
+        priority_button = ft.Container(
+            content=ft.Row(
+                [
+                    ft.Icon(
+                        ft.Icons.FLAG if task.priority != "none" else ft.Icons.OUTLINED_FLAG,
+                        size=18,
+                        color=priority_color if not is_done else APP_MUTED,
+                    ),
+                ],
+                spacing=2,
+            ),
+            on_click=lambda e, t=task: self.cycle_task_priority(t),
+            padding=ft.Padding(4, 2, 4, 2),
+            alignment=ft.Alignment(0, 0),
+            tooltip=f"Пріоритет: {task.priority.upper()}",
         )
 
         delete_button = ft.Container(
@@ -305,7 +399,7 @@ class TodoApp:
         text_col = ft.Column([label] + ([due_row] if due_row else []), expand=True, spacing=4)
 
         row = ft.Row(
-            controls=[status_button, text_col, delete_button],
+            controls=[status_button, text_col, priority_button, delete_button],
             alignment=ft.MainAxisAlignment.SPACE_BETWEEN,
             vertical_alignment=ft.CrossAxisAlignment.CENTER,
             spacing=12,
@@ -317,14 +411,26 @@ class TodoApp:
             padding=18,
             border_radius=18,
             bgcolor=APP_CARD if not is_done else APP_CARD_DONE,
-            border=ft.Border(left=ft.BorderSide(3, APP_OVERDUE)) if overdue else None,
-            animate_opacity=200,
+            border=ft.Border(
+                left=ft.BorderSide(4, APP_OVERDUE if overdue else priority_color)
+            ),
+            animate=ft.Animation(300, ft.AnimationCurve.EASE_IN_OUT),
+            animate_opacity=ft.Animation(250, ft.AnimationCurve.EASE_IN_OUT),
         )
 
     def visible_tasks(self) -> list[Task]:
         if not self.search_query:
-            return tasks
-        return [t for t in tasks if self.search_query in t.desc.lower()]
+            filtered = tasks
+        else:
+            filtered = [t for t in tasks if self.search_query in t.desc.lower()]
+
+        priority_weight = {"high": 3, "medium": 2, "low": 1, "none": 0}
+
+        def sort_key(t: Task):
+            due_timestamp = t.due.timestamp() if t.due else float("inf")
+            return (t.status, -priority_weight.get(t.priority, 0), due_timestamp)
+
+        return sorted(filtered, key=sort_key)
 
     def render(self) -> None:
         self.task_list.controls.clear()
@@ -344,7 +450,7 @@ class TodoApp:
         return ft.Container(
             content=ft.Column(
                 [
-                    ft.Icon(icon=ft.Icons.CHECK_CIRCLE_OUTLINE, color=APP_ACCENT, size=36),
+                    ft.Icon(icon=ft.Icons.CHECK_CIRCLE_OUTLINE, color=self.accent_color, size=36),
                     ft.Text(title, size=22, weight=ft.FontWeight.NORMAL, color=APP_TEXT, font_family=font(bold=True)),
                     ft.Text(subtitle, color=APP_MUTED, font_family=font()),
                 ],
@@ -355,38 +461,60 @@ class TodoApp:
             border_radius=20,
             bgcolor=APP_PANEL,
             border=task_border(),
+            animate_opacity=300,
         )
 
     def build(self) -> None:
-        add_button = ft.Container(
+        self.add_button = ft.Container(
             content=ft.Text("+", size=30, color=APP_TEXT, font_family=font(bold=True)),
             width=52,
             height=52,
-            bgcolor=APP_ACCENT,
+            bgcolor=self.accent_color,
             border_radius=26,
             alignment=ft.Alignment(0, 0),
             on_click=self.on_add_task,
+            animate=ft.Animation(200, ft.AnimationCurve.EASE_IN_OUT),
         )
 
         reminder_button = ft.Container(
             content=ft.Icon(ft.Icons.ALARM_ADD, color=APP_TEXT, size=22),
             width=52,
             height=52,
-            bgcolor=APP_ACCENT_SOFT,
+            bgcolor="#A86576",
             border_radius=26,
             alignment=ft.Alignment(0, 0),
             on_click=self.open_date_picker,
+        )
+
+        self.priority_dropdown = ft.Dropdown(
+            value="none",
+            width=110,
+            options=[
+                ft.DropdownOption(key="none", text="Без"),
+                ft.DropdownOption(key="low", text="Низький"),
+                ft.DropdownOption(key="medium", text="Середній"),
+                ft.DropdownOption(key="high", text="Високий"),
+            ],
+            border_color="#5b3f4b",
+            color=APP_TEXT,
+            bgcolor="#2F2F2F",
+            text_size=12,
+            dense=True,
+            on_select=self.on_priority_select,
         )
 
         due_chip = ft.Row(
             controls=[
                 self.due_label,
                 ft.Container(
-                    content=ft.Text("очистити", size=12, color=APP_ACCENT_SOFT, font_family=font()),
+                    content=ft.Text("очистити", size=12, color="#A86576", font_family=font()),
                     on_click=self.clear_due,
                 ),
+                ft.Text("Пріоритет:", size=12, color=APP_MUTED, font_family=font()),
+                self.priority_dropdown,
             ],
             spacing=10,
+            vertical_alignment=ft.CrossAxisAlignment.CENTER,
         )
 
         settings_button = ft.Container(
@@ -404,7 +532,7 @@ class TodoApp:
                     ft.Column(
                         [
                             ft.Text(
-                                "ToRedo",
+                                "ToRedo  ",
                                 size=42,
                                 weight=ft.FontWeight.NORMAL,
                                 color=APP_TEXT,
@@ -425,7 +553,7 @@ class TodoApp:
             controls=[
                 ft.Container(content=self.new_task_field, expand=True),
                 reminder_button,
-                add_button,
+                self.add_button,
             ],
             spacing=12,
             vertical_alignment=ft.CrossAxisAlignment.END,
@@ -439,12 +567,14 @@ class TodoApp:
             self.task_list,
         )
         self.render()
-        self.reminder_loop.start()
+
+        if self.reminders_enabled:
+            self.reminder_loop.start()
 
 
 def main(page: ft.Page):
     register_fonts(page)
-    page.title = "ToRedo"
+    page.title = "ToRedo  "
     page.bgcolor = APP_BG
     page.padding = 24
     page.horizontal_alignment = ft.CrossAxisAlignment.CENTER

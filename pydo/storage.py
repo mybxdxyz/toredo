@@ -10,6 +10,7 @@ def task_to_dict(task: Task) -> dict:
         "due": task.due.isoformat() if task.due else None,
         "status": task.status,
         "notified": task.notified,
+        "priority": task.priority,
     }
 
 
@@ -20,6 +21,7 @@ def dict_to_task(data: dict) -> Task:
         due=due,
         status=data.get("status", False),
         notified=data.get("notified", False),
+        priority=data.get("priority", "none"),
     )
 
 

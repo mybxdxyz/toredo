@@ -29,3 +29,6 @@ venv/
 ENV/
 env.bak/
 venv.bak/
+
+tasks.json
+settings.json
