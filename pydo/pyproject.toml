@@ -9,6 +9,7 @@ authors = [
 ]
 dependencies = [
     "flet>=0.86.5",
+    "platformdirs>=4.11.2",
     "plyer>=2.1.0",
 ]
 
